@@ -1,6 +1,6 @@
 # SHT3x
 
-Elixir driver for the SHT3x series temperature and humidity sensors from Sensirion.
+Elixir driver for the SHT3x (SHT30, SHT31, SHT35) series temperature and humidity sensors from Sensirion.
 
 ## Usage
 
