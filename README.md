@@ -5,8 +5,8 @@ Elixir driver for the SHT3x (SHT30, SHT31, SHT35) series temperature and humidit
 ## Usage
 
 ```elixir
-{:ok, pid} = ElixirALE.I2C.start_link("i2c-1", 0x44)
-[{:ok, temp}, {:ok, humidity}] = SHT3x.single_shot(pid, :high, true)
+{:ok, i2c_pid} = ElixirALE.I2C.start_link("i2c-1", 0x44)
+[{:ok, temp}, {:ok, humidity}] = SHT3x.single_shot_result(i2c_pid, :high, true)
 ```
 
 ## Installation
