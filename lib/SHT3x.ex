@@ -1,9 +1,9 @@
 defmodule SHT3x do
   @moduledoc """
   I2C driver for the SHT3x-DIS Humidity and Temperature Sensor from Sensirion.
-  Usage:
-  {:ok, pid} = ElixirALE.I2C.start_link("i2c-1", 0x44)
-  [{:ok, temp}, {:ok, humidity}] = SHT3x.single_shot(pid, :high, true)
+  ## Usage
+  {:ok, i2c_pid} = ElixirALE.I2C.start_link("i2c-1", 0x44)
+  [{:ok, temp}, {:ok, humidity}] = SHT3x.single_shot_result(i2c_pid, :high, true)
   """
 
   alias ElixirALE.I2C
@@ -269,6 +269,7 @@ defmodule SHT3x do
   def crctable, do: @crctable
 
   @calc_divisor :math.pow(2, 16) - 1
+
   @single_mode_addresses %{
     # clock_stretching
     true => %{
@@ -284,30 +285,183 @@ defmodule SHT3x do
       low: <<0x24, 0x16>>
     }
   }
-  def single_shot(pid, repeatability, clock_stretching) do
+  @periodic_addresses %{
+    # mps
+    0.5 => %{
+      # repeatability
+      high: <<0x20, 0x32>>,
+      medium: <<0x20, 0x24>>,
+      low: <<0x20, 0x2F>>
+    },
+    # mps
+    1 => %{
+      # repeatability
+      high: <<0x21, 0x30>>,
+      medium: <<0x21, 0x26>>,
+      low: <<0x21, 0x2D>>
+    },
+    # mps
+    2 => %{
+      # repeatability
+      high: <<0x22, 0x36>>,
+      medium: <<0x22, 0x20>>,
+      low: <<0x22, 0x2B>>
+    },
+    # mps
+    4 => %{
+      # repeatability
+      high: <<0x23, 0x34>>,
+      medium: <<0x23, 0x22>>,
+      low: <<0x23, 0x29>>
+    },
+    # mps
+    10 => %{
+      # repeatability
+      high: <<0x27, 0x37>>,
+      medium: <<0x27, 0x21>>,
+      low: <<0x27, 0x2A>>
+    }
+  }
+  @fetch_data_address <<0xE0, 0x00>>
+  @art_address <<0x2B, 0x32>>
+  @break_address <<0x30, 0x93>>
+  @soft_reset_address <<0x30, 0xA2>>
+  @heater_enable_address <<0x30, 0x6D>>
+  @heater_disable_address <<0x30, 0x66>>
+  @read_status_address <<0xF3, 0x2D>>
+  @clear_status_address <<0x30, 0x41>>
+
+  @typedoc """
+    16bit temperature and humidity values along with respective 8 bit CRC values.
+  """
+  @type reading :: <<_::48>>
+
+  @typedoc """
+    16bit status plus 8 bit CRC.
+  """
+  @type status :: <<_::24>>
+
+  @typedoc """
+    Measurement repeatability: high, medium or low.
+  """
+  @type repeatability :: :high | :medium | :low
+
+  @typedoc """
+    Ordered list of results: temperature, humidity.
+  """
+  @type result :: {:ok, float} | {:error, :crc_failed}
+  @typedoc """
+    Ordered list of results: [temperature, humidity].
+  """
+  @type result_list :: [result]
+
+  @typedoc """
+    Measurements per second. One in 0.5 | 1 | 2 | 4 | 10.
+  """
+  @type mps :: float | 1 | 2 | 4 | 10
+
+  @spec single_shot_result(pid, repeatability, boolean) :: result_list
+  def single_shot_result(i2c_pid, repeatability, clock_stretching) do
     <<temp::size(16), temp_crc::size(8), humidity::size(16), humidity_crc::size(8)>> =
-      raw_single_shot(pid, repeatability, clock_stretching)
+      single_shot(i2c_pid, repeatability, clock_stretching)
 
-    temp =
-      if calc_crc(temp) == temp_crc do
-        {:ok, calc_temp(temp)}
-      else
-        {:error, :crc_failed}
-      end
-
-    humidity =
-      if calc_crc(humidity) == humidity_crc do
-        {:ok, calc_humidity(humidity)}
-      else
-        {:error, :crc_failed}
-      end
-
-    [temp, humidity]
+    result_list(temp, temp_crc, humidity, humidity_crc)
   end
 
-  def raw_single_shot(pid, repeatability, clock_stretching) do
+  @spec fetch_data_result(pid) :: result_list
+  def fetch_data_result(i2c_pid) do
+    <<temp::size(16), temp_crc::size(8), humidity::size(16), humidity_crc::size(8)>> =
+      fetch_data(i2c_pid)
+
+    result_list(temp, temp_crc, humidity, humidity_crc)
+  end
+
+  def status_result(i2c_pid) do
+    raw_status = status(i2c_pid)
+    <<status_bytes::size(16), status_crc::size(8)>> = raw_status
+
+    if calc_crc(status_bytes) == status_crc do
+      <<
+        alert::size(1),
+        _::size(1),
+        heater_status::size(1),
+        _::size(1),
+        humidity_alert::size(1),
+        temp_alert::size(1),
+        _::size(5),
+        reset_detected::size(1),
+        _::size(2),
+        command_status::size(1),
+        checksum_status::size(1),
+        _::size(8)
+      >> = raw_status
+
+      status_map = %{
+        alert: alert,
+        heater_status: heater_status,
+        humidity_alert: humidity_alert,
+        temp_alert: temp_alert,
+        reset_detected: reset_detected,
+        command_status: command_status,
+        checksum_status: checksum_status
+      }
+
+      {:ok, status_map}
+    else
+      {:error, :crc_failed}
+    end
+  end
+
+  @spec periodic(pid, repeatability, mps) :: :ok | :error
+  def periodic(i2c_pid, repeatability, mps) do
+    address = @periodic_addresses[mps][repeatability]
+    I2C.write(i2c_pid, address)
+  end
+
+  @spec art(pid) :: :ok | :error
+  def art(i2c_pid) do
+    I2C.write(i2c_pid, @art_address)
+  end
+
+  @spec break(pid) :: :ok | :error
+  def break(i2c_pid) do
+    I2C.write(i2c_pid, @break_address)
+  end
+
+  @spec soft_reset(pid) :: :ok | :error
+  def soft_reset(i2c_pid) do
+    I2C.write(i2c_pid, @soft_reset_address)
+  end
+
+  @spec heater_enable(pid) :: :ok | :error
+  def heater_enable(i2c_pid) do
+    I2C.write(i2c_pid, @heater_enable_address)
+  end
+
+  @spec heater_disable(pid) :: :ok | :error
+  def heater_disable(i2c_pid) do
+    I2C.write(i2c_pid, @heater_disable_address)
+  end
+
+  @spec status(pid) :: status
+  def status(i2c_pid) do
+    I2C.write_read(i2c_pid, @read_status_address, 3)
+  end
+
+  @spec clear_status(pid) :: :ok | :error
+  def clear_status(i2c_pid) do
+    I2C.write(i2c_pid, @clear_status_address)
+  end
+
+  @spec single_shot(pid, repeatability, boolean) :: reading
+  def single_shot(i2c_pid, repeatability, clock_stretching) do
     address = @single_mode_addresses[clock_stretching][repeatability]
-    I2C.write_read(pid, address, 6)
+    I2C.write_read(i2c_pid, address, 6)
+  end
+
+  @spec fetch_data(pid) :: reading
+  def fetch_data(i2c_pid) do
+    I2C.write_read(i2c_pid, @fetch_data_address, 6)
   end
 
   def calc_temp(raw_temp) do
@@ -329,5 +483,23 @@ defmodule SHT3x do
     crc = <<elem(SHT3x.crctable(), data)>>
     <<data>> = :crypto.exor(<<byte2>>, crc)
     elem(SHT3x.crctable(), data)
+  end
+
+  defp result_list(temp, temp_crc, humidity, humidity_crc) do
+    temp =
+      if calc_crc(temp) == temp_crc do
+        {:ok, calc_temp(temp)}
+      else
+        {:error, :crc_failed}
+      end
+
+    humidity =
+      if calc_crc(humidity) == humidity_crc do
+        {:ok, calc_humidity(humidity)}
+      else
+        {:error, :crc_failed}
+      end
+
+    [temp, humidity]
   end
 end

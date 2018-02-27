@@ -29,5 +29,5 @@ be found at [https://hexdocs.pm/sht3x](https://hexdocs.pm/sht3x).
 
 ## TODO
 
-* support other commands than just single shot measurement
-* api for fahrenheit temperature results?
+* increase test + typespec coverage/correctness
+* more docs
